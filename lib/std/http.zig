@@ -350,8 +350,6 @@ pub const Reader = struct {
         /// The stream is available to be used for the first time, or reused.
         ready,
         received_head,
-        /// The stream goes until the connection is closed.
-        body_none,
         body_remaining_content_length: u64,
         body_remaining_chunk_len: RemainingChunkLen,
         /// The stream would be eligible for another HTTP request, however the
@@ -442,22 +440,17 @@ pub const Reader = struct {
                 return &reader.interface;
             },
             .none => {
-                if (content_length) |len| {
-                    reader.state = .{ .body_remaining_content_length = len };
-                    reader.interface = .{
-                        .buffer = transfer_buffer,
-                        .seek = 0,
-                        .end = 0,
-                        .vtable = &.{
-                            .stream = contentLengthStream,
-                            .discard = contentLengthDiscard,
-                        },
-                    };
-                    return &reader.interface;
-                } else {
-                    reader.state = .body_none;
-                    return reader.in;
-                }
+                reader.state = .{ .body_remaining_content_length = content_length orelse 0 };
+                reader.interface = .{
+                    .buffer = transfer_buffer,
+                    .seek = 0,
+                    .end = 0,
+                    .vtable = &.{
+                        .stream = contentLengthStream,
+                        .discard = contentLengthDiscard,
+                    },
+                };
+                return &reader.interface;
             },
         }
     }
@@ -477,28 +470,6 @@ pub const Reader = struct {
         decompress: *Decompress,
         decompress_buffer: []u8,
     ) *std.Io.Reader {
-        if (transfer_encoding == .none and content_length == null) {
-            assert(reader.state == .received_head);
-            reader.state = .body_none;
-            switch (content_encoding) {
-                .identity => {
-                    return reader.in;
-                },
-                .deflate => {
-                    decompress.* = .{ .flate = .init(reader.in, .zlib, decompress_buffer) };
-                    return &decompress.flate.reader;
-                },
-                .gzip => {
-                    decompress.* = .{ .flate = .init(reader.in, .gzip, decompress_buffer) };
-                    return &decompress.flate.reader;
-                },
-                .zstd => {
-                    decompress.* = .{ .zstd = .init(reader.in, decompress_buffer, .{ .verify_checksum = false }) };
-                    return &decompress.zstd.reader;
-                },
-                .compress => unreachable,
-            }
-        }
         const transfer_reader = bodyReader(reader, transfer_buffer, transfer_encoding, content_length);
         return decompress.init(transfer_reader, decompress_buffer, content_encoding);
     }
